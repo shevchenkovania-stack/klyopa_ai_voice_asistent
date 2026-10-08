@@ -108,7 +108,7 @@ class _KlyopaFaceState extends State<KlyopaFace> with TickerProviderStateMixin {
       animation: Listenable.merge([_blinkController, _breathController]),
       builder: (context, _) {
         return AspectRatio(
-          aspectRatio: 415 / 483,
+          aspectRatio: 375 / 330,
           child: CustomPaint(
             painter: _FallbackFacePainter(
               state: widget.state,
@@ -221,32 +221,31 @@ class _KlyopaPainter extends CustomPainter {
     // 1. Face base
     _drawPart(canvas, parts['face_base']);
 
-    // 2. Ears (wiggle up/down with different rhythms when talking)
-    _drawPart(canvas, parts['left_ear'], offsetY: leftEarWiggle * scale);
-    _drawPart(canvas, parts['right_ear'], offsetY: rightEarWiggle * scale);
-
-    // 3. Face shadow / cheeks (blush)
+    // 2. Face shadow / cheeks (blush)
     _drawPart(canvas, parts['face_shadow']);
     _drawPart(canvas, parts['left_cheek']);
     _drawPart(canvas, parts['right_cheek']);
 
-    // 4. Eyes (with blink + scale_hint)
+    // 3. Eyes (with blink + scale_hint)
     _drawEye(canvas, parts['left_eye'], parts['left_eye_closed'], isLeft: true);
     _drawEye(canvas, parts['right_eye'], parts['right_eye_closed'], isLeft: false);
 
-    // 5. Brows
+    // 4. Brows
     _drawPart(canvas, parts['left_brow'], offsetY: -browValue * 10 * scale);
     _drawPart(canvas, parts['right_brow'], offsetY: -browValue * 10 * scale);
 
-    // 6. Nose
+    // 5. Nose
     _drawPart(canvas, parts['nose']);
 
-    // 7. Mouth
+    // 6. Mouth
     _drawMouth(canvas, parts);
 
-    // 8. Front hair - only the bangs overlap the face, everything else hangs
-    //    behind it (see the "layer" field in klyopa_config.json).
+    // 7. Front hair - bangs overlap the forehead
     _drawHairLayer(canvas, parts, 'front');
+
+    // 8. Ears IN FRONT of hair (device reference: big round ears on top)
+    _drawPart(canvas, parts['left_ear'], offsetY: leftEarWiggle * scale);
+    _drawPart(canvas, parts['right_ear'], offsetY: rightEarWiggle * scale);
   }
 
   void _drawHairLayer(Canvas canvas, Map<String, dynamic> parts, String layer) {

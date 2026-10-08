@@ -5,11 +5,13 @@ $cfg = Get-Content -Raw ($root + '\assets\klyopa\klyopa_config.json') | ConvertF
 $parts = $cfg.parts
 $cw = [int]$cfg.canvas.width; $ch = [int]$cfg.canvas.height
 $SCALE = 2
+$PADX = 20; $PADY = 20
 
 $ref = New-Object System.Drawing.Bitmap ($root + '\build\ref_original.jpg')
+$REF_SCALE = 1.0  # ref_original.jpg IS the coordinate system (335x290)
 $PANEL = $cw * $SCALE
 $OW = 3 * $PANEL + 24
-$OH = [Math]::Max($ch * $SCALE, $ref.Height * $SCALE)
+$OH = [Math]::Max($ch * $SCALE, [int]($ref.Height * $REF_SCALE * $SCALE) + $PADY * $SCALE)
 $out = New-Object System.Drawing.Bitmap $OW, $OH
 $g = [System.Drawing.Graphics]::FromImage($out)
 $g.Clear([System.Drawing.Color]::FromArgb(90, 90, 110))
@@ -38,12 +40,9 @@ function DrawHairLayer($name) {
 
 # paint order must match _KlyopaPainter
 DrawPart $parts.body
-DrawPart $parts.neck
 DrawPart $parts.hair_back
 DrawHairLayer 'back'
 DrawPart $parts.face_base
-DrawPart $parts.left_ear
-DrawPart $parts.right_ear
 DrawPart $parts.face_shadow
 DrawPart $parts.left_eye
 DrawPart $parts.right_eye
@@ -52,18 +51,20 @@ DrawPart $parts.right_brow
 DrawPart $parts.nose
 if ($parts.mouth_variants) { DrawPart ($parts.mouth_variants | Where-Object { $_.id -eq 'mouth_neutral' } | Select-Object -First 1) }
 DrawHairLayer 'front'
+DrawPart $parts.left_ear
+DrawPart $parts.right_ear
 
-$g.DrawImage($ref, [single]($PANEL + 12), [single]0, [single]($ref.Width * $SCALE), [single]($ref.Height * $SCALE))
+$refW = [int]($ref.Width * $REF_SCALE * $SCALE); $refH = [int]($ref.Height * $REF_SCALE * $SCALE)
+$g.DrawImage($ref, [single]($PANEL + 12 + $PADX * $SCALE), [single]($PADY * $SCALE), [single]$refW, [single]$refH)
 
-# panel 3: 50% reference overlaid on the composite, aligned to the canvas origin
-# (the config places artwork at reference px + PADX/PADY, so ref(0,0) -> canvas(10,12))
+# panel 3: 50% reference overlaid on the composite, aligned to canvas PADX/PADY
 $cm = New-Object System.Drawing.Imaging.ColorMatrix
 $cm.Matrix33 = 0.5
 $ia = New-Object System.Drawing.Imaging.ImageAttributes
 [void]$ia.SetColorMatrix($cm)
-$ox = (2 * $PANEL + 12) + 10 * $SCALE
-$oy = 12 * $SCALE
-$dst = New-Object System.Drawing.Rectangle ([int]$ox, [int]$oy, [int]($ref.Width * $SCALE), [int]($ref.Height * $SCALE))
+$ox = (2 * $PANEL + 12) + $PADX * $SCALE
+$oy = $PADY * $SCALE
+$dst = New-Object System.Drawing.Rectangle ([int]$ox, [int]$oy, $refW, $refH)
 $g.DrawImage($ref, $dst, 0, 0, $ref.Width, $ref.Height, ([System.Drawing.GraphicsUnit]::Pixel), $ia)
 
 $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::Lime), 2

@@ -22,8 +22,8 @@ class _KlyopaTestScreenState extends State<KlyopaTestScreen> {
         children: [
           const SizedBox(height: 20),
           Container(
-            // 1:1 with the 355x330 canvas of klyopa_config.json
-            width: 355,
+            // 1:1 with the 375x330 canvas of klyopa_config.json
+            width: 375,
             height: 330,
             decoration: BoxDecoration(
               border: Border.all(color: Colors.grey),
