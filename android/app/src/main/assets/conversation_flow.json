@@ -1,0 +1,127 @@
+{
+  "name": "Long Dialogue Test — 10 turns",
+  "version": 1,
+  "description": "Естественный разговор на 10 реплик. Проверяем: агент отвечает по теме, помнит контекст, не повторяется.",
+  "steps": [
+    {
+      "id": "turn_1",
+      "level": 1,
+      "name": "GREETING",
+      "user": "Привет",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен поздороваться"
+    },
+    {
+      "id": "turn_2",
+      "level": 2,
+      "name": "INTRODUCE",
+      "user": "Меня зовут Андрей",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен отреагировать на имя"
+    },
+    {
+      "id": "turn_3",
+      "level": 3,
+      "name": "LOCATION",
+      "user": "Я сейчас в Москве",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен подхватить тему города"
+    },
+    {
+      "id": "turn_4",
+      "level": 4,
+      "name": "WEATHER",
+      "user": "Какая сейчас погода?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен ответить про погоду (или попробовать)"
+    },
+    {
+      "id": "turn_5",
+      "level": 5,
+      "name": "ACTIVITY",
+      "user": "Чем можно заняться в такую погоду?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен предложить активности"
+    },
+    {
+      "id": "turn_6",
+      "level": 6,
+      "name": "DETAIL",
+      "user": "А где лучше всего гулять?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен посоветовать места"
+    },
+    {
+      "id": "turn_7",
+      "level": 7,
+      "name": "PERSONAL",
+      "user": "А ты сам где живёшь?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен ответить о себе"
+    },
+    {
+      "id": "turn_8",
+      "level": 8,
+      "name": "RECALL_NAME",
+      "user": "Как меня зовут?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": ["Андрей", "андрей"],
+        "memory_checks": []
+      },
+      "description": "Агент должен вспомнить имя"
+    },
+    {
+      "id": "turn_9",
+      "level": 9,
+      "name": "RECALL_CITY",
+      "user": "А я где живу?",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": ["Москв", "москв"],
+        "memory_checks": []
+      },
+      "description": "Агент должен вспомнить город"
+    },
+    {
+      "id": "turn_10",
+      "level": 10,
+      "name": "FAREWELL",
+      "user": "Ладно, пока",
+      "checks": {
+        "response_not_empty": true,
+        "response_contains": [],
+        "memory_checks": []
+      },
+      "description": "Агент должен попрощаться"
+    }
+  ]
+}
