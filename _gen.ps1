@@ -33,13 +33,13 @@ $rows = @(
   # rounded dome instead of the flat-topped "square head" of the previous pass
   @{ k='hair_back';       f='klepa_parts/hair_variant_1.png'; cw=146; ch=139; c=@(3,9,135,129);   t=@(18,4,299,250) },
   @{ k='face_base';       f='klepa_parts/head_base.png';      cw=142; ch=129; c=@(8,5,133,121);   t=@(75,86,241,250) },
-  # ears: ref skin islands are x[57..88]/x[228..258] y[163..208].  Kept near the
-  # reference width but dropped ~14px lower so they peek out of the hair = floppy.
-  # ear_left content x[25..67] y[33..101], ear_right x[21..62] y[31..100].
-  @{ k='left_ear';        f='klepa_parts/ear_left.png';       cw=84;  ch=127; c=@(25,33,67,101);  t=@(56,180,92,232) },
-  @{ k='right_ear';       f='klepa_parts/ear_right.png';      cw=89;  ch=125; c=@(21,31,62,100);  t=@(222,180,258,232) },
-  @{ k='left_eye';        f='klepa_parts/eye_left_full_1.png';cw=111; ch=83;  c=@(28,11,84,74);   t=@(94,140,142,192) },
-  @{ k='right_eye';       f='klepa_parts/eye_left_full_2.png';cw=100; ch=80;  c=@(22,10,77,69);   t=@(174,140,223,192) },
+  # ears: ref skin islands are x[57..88]/x[228..258] y[163..208].
+  # ear_left.png is actually the RIGHT ear (character perspective) and vice versa.
+  # ear_left.png content x[25..67] y[33..101], ear_right.png x[21..62] y[31..100].
+  @{ k='left_ear';        f='klepa_parts/ear_right.png';      cw=89;  ch=125; c=@(21,31,62,100);  t=@(56,160,92,212) },
+  @{ k='right_ear';       f='klepa_parts/ear_left.png';       cw=84;  ch=127; c=@(25,33,67,101);  t=@(222,160,258,212) },
+  @{ k='left_eye';        f='klepa_parts/eye_left_full_1.png';cw=111; ch=83;  c=@(28,11,84,74);   t=@(92,137,144,194) },
+  @{ k='right_eye';       f='klepa_parts/eye_left_full_2.png';cw=100; ch=80;  c=@(22,10,77,69);   t=@(172,137,225,194) },
   @{ k='left_eye_closed'; f='klepa_parts/eye_or_mouth_line_1.png'; cw=117; ch=55; c=@(19,26,88,37); t=@(100,163,137,176) },
   @{ k='right_eye_closed';f='klepa_parts/eye_or_mouth_line_2.png'; cw=118; ch=56; c=@(19,25,87,38); t=@(180,163,217,176) },
   @{ k='left_brow';       f='klepa_parts/brow_left_style1.png';  cw=95; ch=126; c=@(17,38,75,59); t=@(95,118,135,133) },
