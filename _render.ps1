@@ -5,7 +5,7 @@ $cfg = Get-Content -Raw ($root + '\assets\klyopa\klyopa_config.json') | ConvertF
 $parts = $cfg.parts
 $cw = [int]$cfg.canvas.width; $ch = [int]$cfg.canvas.height
 $SCALE = 2
-$PADX = 20; $PADY = 20
+$PADX = 15; $PADY = 15
 
 $ref = New-Object System.Drawing.Bitmap ($root + '\build\ref_original.jpg')
 $REF_SCALE = 1.0  # ref_original.jpg IS the coordinate system (335x290)
@@ -51,8 +51,7 @@ DrawPart $parts.right_brow
 DrawPart $parts.nose
 if ($parts.mouth_variants) { DrawPart ($parts.mouth_variants | Where-Object { $_.id -eq 'mouth_neutral' } | Select-Object -First 1) }
 DrawHairLayer 'front'
-DrawPart $parts.left_ear
-DrawPart $parts.right_ear
+# NOTE: no separate ears - head_base.png already contains the small ears
 
 $refW = [int]($ref.Width * $REF_SCALE * $SCALE); $refH = [int]($ref.Height * $REF_SCALE * $SCALE)
 $g.DrawImage($ref, [single]($PANEL + 12 + $PADX * $SCALE), [single]($PADY * $SCALE), [single]$refW, [single]$refH)
