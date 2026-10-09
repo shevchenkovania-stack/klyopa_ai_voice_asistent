@@ -317,19 +317,32 @@ class VoiceAgent(
         }
         Log.d(TAG, "callAI: провайдер=$primaryProvider, ключ=${if (activeKey.isEmpty()) "❌ ПУСТОЙ!" else "${activeKey.take(10)}..."}")
 
+        // Ключа у активного провайдера нет — молча берём любого с ключом,
+        // иначе все попытки упрутся в 401/400 и Клёпа ответит «Ошибка соединения»
+        var primary = primaryProvider
+        if (activeKey.isEmpty()) {
+            val alt = listOf("Groq", "OpenAI", "Gemini").firstOrNull {
+                (when (it) { "Groq" -> groqApiKey; "Gemini" -> geminiApiKey; else -> openaiApiKey }).isNotEmpty()
+            }
+            if (alt != null) {
+                Log.w(TAG, "Нет ключа у $primary — беру $alt")
+                primary = alt
+            }
+        }
+
         // 3 попытки: первая + retry с задержкой из 429 + fallback
         val maxAttempts = 3
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             try {
-                return callProvider(primaryProvider, messages, toolSchemas, onToken)
+                return callProvider(primary, messages, toolSchemas, onToken)
             } catch (e: Exception) {
                 lastError = e
-                Log.e(TAG, "$primaryProvider ошибка (попытка $attempt/$maxAttempts): [${e.javaClass.simpleName}] ${e.message}")
+                Log.e(TAG, "$primary ошибка (попытка $attempt/$maxAttempts): [${e.javaClass.simpleName}] ${e.message}")
                 
                 // Если 429 (rate limit) — сразу fallback, не ждём
                 if (e.message?.contains("429") == true) {
-                    val fallbackResult = tryFallbackProviders(messages, toolSchemas, skipProvider = primaryProvider, onToken = onToken)
+                    val fallbackResult = tryFallbackProviders(messages, toolSchemas, skipProvider = primary, onToken = onToken)
                     if (fallbackResult != null) return fallbackResult
                 }
                 
@@ -338,7 +351,7 @@ class VoiceAgent(
                 }
             }
         }
-        Log.e(TAG, "$primaryProvider — все попытки провалены: [${lastError?.javaClass?.simpleName}] ${lastError?.message}")
+        Log.e(TAG, "$primary — все попытки провалены: [${lastError?.javaClass?.simpleName}] ${lastError?.message}")
         return AgentResponse(message = "Ошибка соединения. Попробуй позже.")
     }
 

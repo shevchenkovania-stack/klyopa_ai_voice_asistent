@@ -160,6 +160,21 @@ class PipelineOrchestrator(
     // ==================== Pipeline Execution ====================
 
     /**
+     * STT с страховкой: Groq в приоритете (быстрый, бесплатный), но если он
+     * вернул пусто/ошибку и есть ключ OpenAI — распознаём через OpenAI.
+     */
+    private suspend fun transcribeWithFallback(audioFile: File): String {
+        val primary = if (config.groqApiKey.isNotEmpty()) "groq" else "openai"
+        val primaryKey = if (primary == "groq") config.groqApiKey else config.openaiApiKey
+        var text = stt.transcribe(audioFile, primaryKey, config.language, primary)
+        if (text.isEmpty() && primary == "groq" && config.openaiApiKey.isNotEmpty()) {
+            Log.w(TAG, "STT: groq вернул пусто — пробую openai")
+            text = stt.transcribe(audioFile, config.openaiApiKey, config.language, "openai")
+        }
+        return text
+    }
+
+    /**
      * Полный голосовой pipeline: запись → STT → Agent → TTS.
      * Вызывается при нажатии кнопки микрофона или при wake word.
      */
@@ -193,15 +208,7 @@ class PipelineOrchestrator(
 
             // Step 2: STT — prefer Groq (free, no quota) if available
             transitionTo(PipelineState.STT_RUNNING, "🧠 Распознаю...")
-            val sttProvider = if (config.groqApiKey.isNotEmpty()) "groq" else "openai"
-            val sttApiKey = if (sttProvider == "groq") config.groqApiKey else config.openaiApiKey
-            Log.d(TAG, "STT: provider=$sttProvider")
-            val text = stt.transcribe(
-                audioFile = audioFile,
-                apiKey = sttApiKey,
-                language = config.language,
-                provider = sttProvider
-            )
+            val text = transcribeWithFallback(audioFile)
             Log.d(TAG, "STT: '$text'")
 
             if (text.isEmpty()) {
@@ -290,17 +297,10 @@ class PipelineOrchestrator(
         Log.i(TAG, "├──────────────────────────────────────────────────")
         try {
             // ── STEP 1: STT ──
-            Log.i(TAG, "│ [1/6] STT  ▶ transcribing (${config.groqApiKey.isNotEmpty().let { if (it) "groq" else "openai" }})...")
+            Log.i(TAG, "│ [1/6] STT  ▶ transcribing (groq → openai)...")
             timer.step("VAD → STT start")
             transitionTo(PipelineState.STT_RUNNING, "🧠 Распознаю...")
-            val sttProvider = if (config.groqApiKey.isNotEmpty()) "groq" else "openai"
-            val sttApiKey = if (sttProvider == "groq") config.groqApiKey else config.openaiApiKey
-            val text = stt.transcribe(
-                audioFile = audioFile,
-                apiKey = sttApiKey,
-                language = config.language,
-                provider = sttProvider
-            )
+            val text = transcribeWithFallback(audioFile)
             val sttMs = System.currentTimeMillis() - pipeStart
             timer.step("STT done: '${text.take(30)}'")
             Log.i(TAG, "│ [1/6] STT  ◀ '${text.take(40)}' (+${sttMs}ms)")

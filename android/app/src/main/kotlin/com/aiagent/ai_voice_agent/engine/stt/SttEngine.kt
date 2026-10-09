@@ -67,7 +67,9 @@ class SttEngine {
 
         // Select endpoint based on provider
         val url = if (provider == "groq") GROQ_WHISPER_URL else OPENAI_WHISPER_URL
-        Log.d(TAG, "Using endpoint: $url")
+        // У Groq своего whisper-1 нет — там whisper-large-v3-turbo
+        val model = if (provider == "groq") "whisper-large-v3-turbo" else "whisper-1"
+        Log.d(TAG, "Using endpoint: $url model: $model")
 
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -76,7 +78,7 @@ class SttEngine {
                 audioFile.name,
                 audioFile.asRequestBody(mimeType.toMediaType())
             )
-            .addFormDataPart("model", "whisper-1")
+            .addFormDataPart("model", model)
             .addFormDataPart("language", language)
             .addFormDataPart("response_format", "text")
             .build()

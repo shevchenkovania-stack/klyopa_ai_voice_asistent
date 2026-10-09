@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:ai_voice_agent/core/di/injection.dart';
 import 'package:ai_voice_agent/core/config/app_config.dart';
+import 'package:ai_voice_agent/core/engine/kotlin_engine_service.dart';
 import 'package:ai_voice_agent/core/security/secure_storage.dart';
 import 'package:ai_voice_agent/ui/widgets/api_key_widgets.dart';
 
@@ -95,6 +96,8 @@ class _ApiKeysScreenState extends State<ApiKeysScreen>
     config.groqApiKey = _groqController.text.trim();
     config.openaiApiKey = _openaiController.text.trim();
     await config.save(storage);
+    // Сразу отдаём ключи Kotlin-движку — иначе STT работает без ключа до перезапуска
+    await sl<KotlinEngineService>().syncConfig(config);
     setState(() => _saving = false);
 
     if (mounted) {

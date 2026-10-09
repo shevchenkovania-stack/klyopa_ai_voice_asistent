@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:ai_voice_agent/core/di/injection.dart';
 import 'package:ai_voice_agent/core/config/app_config.dart';
+import 'package:ai_voice_agent/core/engine/kotlin_engine_service.dart';
 import 'package:ai_voice_agent/core/security/secure_storage.dart';
 import 'package:ai_voice_agent/voice/wake_word_detector.dart';
 
@@ -47,6 +48,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     config.language = _language;
     config.activeProvider = _activeProvider;
     await config.save(storage);
+    // Провайдер/имя/язык нужны Kotlin-движку сразу, не с перезапуска
+    await sl<KotlinEngineService>().syncConfig(config);
 
     // Update wake word detector with new name
     sl<WakeWordDetector>().updateWakeWord(config.agentName);
