@@ -694,11 +694,11 @@ class _HomeScreenState extends State<HomeScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Klyopa animated face - klyopa_config.json canvas is 375x330,
+                // Klyopa animated face - klyopa_config.json canvas is 415x408,
                 // the widget contain-scales, so keep the box on that ratio.
                 SizedBox(
                   width: 320,
-                  height: 300,
+                  height: 314,
                   child: KlyopaFace(state: _getKlyopaState()),
                 ),
                 const SizedBox(height: 24),

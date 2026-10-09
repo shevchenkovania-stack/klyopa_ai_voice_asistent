@@ -108,7 +108,7 @@ class _KlyopaFaceState extends State<KlyopaFace> with TickerProviderStateMixin {
       animation: Listenable.merge([_blinkController, _breathController]),
       builder: (context, _) {
         return AspectRatio(
-          aspectRatio: 375 / 330,
+          aspectRatio: 415 / 408,
           child: CustomPaint(
             painter: _FallbackFacePainter(
               state: widget.state,
@@ -196,30 +196,25 @@ class _KlyopaPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final parts = config['parts'] as Map<String, dynamic>;
 
-    // Determine mouth and brow based on state
+    // Determine brow raise based on state
     double browValue = 0;
-    double leftEarWiggle = 0;
-    double rightEarWiggle = 0;
     if (state == KlyopaState.thinking || state == KlyopaState.error) {
       browValue = 1.0;
     } else if (state == KlyopaState.happy) {
       browValue = 0.5;
     }
-    
-    // Ear wiggle when talking - different phases for interesting movement
-    if (state == KlyopaState.talking) {
-      final time = DateTime.now().millisecondsSinceEpoch;
-      leftEarWiggle = ((time % 400) / 400.0 * 2 - 1) * 4; // oscillate -4 to 4
-      rightEarWiggle = (((time + 200) % 600) / 600.0 * 2 - 1) * 3; // different rhythm
-    }
 
-    // 0. Neck / shoulders, then the hair volume that sits behind the head
+    // 0. Neck / shoulders (hair is drawn after the face so it sits IN FRONT of
+    // the ears, which are baked into face_base).
     _drawPart(canvas, parts['body']);
     _drawPart(canvas, parts['hair_back']);
-    _drawHairLayer(canvas, parts, 'back');
 
     // 1. Face base
     _drawPart(canvas, parts['face_base']);
+
+    // 1b. Hair volume - drawn IN FRONT of the face/ears (ears are part of
+    // face_base), but BEHIND the eyes/brows so the features stay visible.
+    _drawHairLayer(canvas, parts, 'back');
 
     // 2. Face shadow / cheeks (blush)
     _drawPart(canvas, parts['face_shadow']);
@@ -242,10 +237,7 @@ class _KlyopaPainter extends CustomPainter {
 
     // 7. Front hair - bangs overlap the forehead
     _drawHairLayer(canvas, parts, 'front');
-
-    // 8. Ears IN FRONT of hair (device reference: big round ears on top)
-    _drawPart(canvas, parts['left_ear'], offsetY: leftEarWiggle * scale);
-    _drawPart(canvas, parts['right_ear'], offsetY: rightEarWiggle * scale);
+    // NOTE: ears are baked into head_base.png - no separate ear layer.
   }
 
   void _drawHairLayer(Canvas canvas, Map<String, dynamic> parts, String layer) {

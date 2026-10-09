@@ -59,6 +59,7 @@ flutter:
   assets:
     - assets/klyopa/
     - assets/klyopa/klepa_parts/
+    - assets/klyopa/face_layers/
 
 dependency_overrides:
   record_linux:
