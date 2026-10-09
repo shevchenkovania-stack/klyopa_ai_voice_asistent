@@ -35,7 +35,7 @@ class EngineConfig(context: Context) {
         set(value) = prefs.edit().putString("language", value).apply()
 
     var ttsVoice: String
-        get() = prefs.getString("tts_voice", "android") ?: "android"
+        get() = prefs.getString("tts_voice", "ru-RU-DmitryNeural") ?: "ru-RU-DmitryNeural"
         set(value) = prefs.edit().putString("tts_voice", value).apply()
 
     var ttsSpeed: Float

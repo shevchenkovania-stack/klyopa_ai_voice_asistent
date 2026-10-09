@@ -178,9 +178,8 @@ object EngineManager {
             voice = when {
                 config.ttsVoice == "android" -> "android"
                 config.ttsVoice.startsWith("ru-RU-") -> config.ttsVoice
-                else -> "android"
+                else -> "ru-RU-DmitryNeural" // канонический голос Клёпы (Edge TTS)
             }
-            openaiApiKey = config.openaiApiKey
             initAndroidTts()
         }
         stt = SttEngine()
@@ -261,12 +260,13 @@ object EngineManager {
             }
             logBridge = { tag, level, msg, details -> logToFlutter(tag, level, msg, details) }
 
-            // Setup continuous dialogue + TTS callbacks (only for new architecture)
-            if (config.useNewSessionArchitecture) {
-                setupContinuousDialogueCallbacks(onResumeWakeWord = {
+            // Setup continuous dialogue + TTS callbacks — нужны в ОБОИХ режимах:
+            // в simple mode цикл слушания живёт именно на tts.onTtsFinished → ContinuousDialogueManager
+            setupContinuousDialogueCallbacks(onResumeWakeWord = {
+                if (config.useNewSessionArchitecture) {
                     sessionManager.handleEvent(AssistantSessionManager.Event.TTS_FINISHED)
-                })
-            }
+                }
+            })
         }
 
         // ===== Feature flags: новая архитектура (SessionManager + WakeWord + Continuous) =====
@@ -347,16 +347,24 @@ object EngineManager {
             }
             sessionManager.startInIdle()
         } else {
-            // ===== СТАРЫЙ РЕЖИМ: только кнопка, без SessionManager/WakeWord/Continuous =====
-            Log.d(TAG, "[Init] ⚡ SIMPLE MODE: button only, no SessionManager/WakeWord/Continuous")
+            // ===== SIMPLE MODE: ContinuousDialogueManager держит цикл слушания, wake word выключен =====
+            Log.d(TAG, "[Init] ⚡ SIMPLE MODE: continuous dialogue via ContinuousDialogueManager, no wake word")
             continuousDialogue.stopSession(cancelled = true)
+
+            // Состояния CDM → UI, чтобы «Слушаю...» на экране был правдой
+            continuousDialogue.onStateChanged = { state ->
+                mainHandler.post {
+                    try { engineChannel?.invokeMethod("onPipelineStateChanged", state.name) } catch (_: Exception) {}
+                    this@EngineManager.onPipelineStateChanged?.invoke(state)
+                }
+            }
 
             // TTS callbacks — простые, без session manager
             pipeline.onTtsStarted = {
                 Log.d(TAG, "[TTS] Started (simple mode)")
             }
             pipeline.onTtsFinished = {
-                Log.d(TAG, "[TTS] Finished (simple mode)")
+                Log.d(TAG, "[TTS] Finished (simple mode) — цикл слушания продолжит сам")
             }
         }
 
@@ -483,9 +491,8 @@ object EngineManager {
         tts.voice = when {
             config.ttsVoice == "android" -> "android"
             config.ttsVoice.startsWith("ru-RU-") -> config.ttsVoice
-            else -> "android"
+            else -> "ru-RU-DmitryNeural"
         }
-        tts.openaiApiKey = config.openaiApiKey
         setWakeWordName(config.wakeWordName)
         if (config.useNewSessionArchitecture && config.enableForegroundService) {
             if (config.wakeWordEnabled && !WakeWordService.isRunning) enableWakeWord()
@@ -522,7 +529,11 @@ object EngineManager {
     fun startContinuousSession(config: ContinuousDialogueManager.VadConfig? = null) {
         if (!isInitialized) { Log.w(TAG, "Engine not initialized"); return }
         if (!this.config.useNewSessionArchitecture) {
-            Log.d(TAG, "startContinuousSession — simple mode: no-op (button only)")
+            // Simple mode 0.1: ContinuousDialogueManager — настоящий непрерывный цикл
+            if (!continuousDialogue.isSessionActive) {
+                Log.d(TAG, "startContinuousSession — simple mode: CDM session started")
+                continuousDialogue.startSession(config)
+            }
             return
         }
         Log.d(TAG, "startContinuousSession — new arch: SessionManager owns mic, legacy CDM skipped")
@@ -532,6 +543,11 @@ object EngineManager {
     }
 
     fun stopContinuousSession(cancelled: Boolean = false) {
+        if (!this.config.useNewSessionArchitecture) {
+            Log.d(TAG, "stopContinuousSession — simple mode: stopping CDM session")
+            if (::continuousDialogue.isInitialized) continuousDialogue.stopSession(cancelled)
+            return
+        }
         Log.d(TAG, "stopContinuousSession — new arch: no-op (SessionManager owns mic)")
         // New architecture: SessionManager handles lifecycle. Nothing to stop.
     }

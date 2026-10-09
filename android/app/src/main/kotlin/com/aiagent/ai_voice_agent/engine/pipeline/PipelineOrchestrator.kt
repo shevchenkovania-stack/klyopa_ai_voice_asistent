@@ -239,18 +239,8 @@ class PipelineOrchestrator(
 
             // Step 3: Agent
             transitionTo(PipelineState.AGENT_RUNNING, "💭 Думаю...")
-
-            // TTS Filler — "Секунду..." если Agent думает > 500ms
-            val fillerJob = launch {
-                delay(500)
-                Log.d(TAG, "Filler: запускаю 'Секунду...'")
-                tts.speak("Секунду...")
-            }
-
+            // Филлер «Секунду...» убран из 0.1: он глушил коллбэки и мог оставить Клёпу немой.
             val response = orchestrator.process(text)
-            fillerJob.cancel()
-            // Останавливаем filler только если он реально играл
-            if (tts.isSpeaking) tts.stop()
 
             Log.d(TAG, "Agent: $response")
             log("Agent", "success", "Ответ агента", response.take(80))
@@ -415,27 +405,9 @@ class PipelineOrchestrator(
                 tokenBuffer.append(token)
             }
 
-            // Filler TTS — suppress finished/interrupted callbacks to prevent state corruption,
-            // but KEEP onTtsStarted so echo suppression (ttsPlaying flag) and barge-in detection work.
-            val savedTtsFinished = tts.onTtsFinished
-            val savedTtsInterrupted = tts.onTtsInterrupted
-            tts.onTtsFinished = null
-            tts.onTtsInterrupted = null
-
-            val fillerJob = scope.launch {
-                delay(500)
-                Log.i(TAG, "│       FILLER ▶ 'Секунду...'")
-                tts.speak("Секунду...")
-            }
-
-            Log.i(TAG, "│ [4/6] LLM  ▶ processing (filler armed @500ms)...")
+            Log.i(TAG, "│ [4/6] LLM  ▶ processing...")
+            // Филлер «Секунду...» убран из 0.1: он обнулял onTtsFinished и мог заглушить весь цикл.
             val response = orchestrator.process(text, onToken = onTokenCallback)
-            fillerJob.cancel()
-            if (tts.isSpeaking) tts.stop()
-
-            // Restore callbacks for response TTS
-            tts.onTtsFinished = savedTtsFinished
-            tts.onTtsInterrupted = savedTtsInterrupted
 
             val llmTotalMs = System.currentTimeMillis() - llmRequestStart
             timer.step("Agent done: '${response.take(40)}...' (streaming: ${llmTotalMs}ms)")

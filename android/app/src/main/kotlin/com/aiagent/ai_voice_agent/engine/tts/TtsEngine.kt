@@ -1,8 +1,5 @@
 package com.aiagent.ai_voice_agent.engine.tts
 
-import android.media.AudioFormat
-import android.media.AudioManager as AndroidAudioManager
-import android.media.AudioTrack
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -29,20 +26,16 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * TTS Engine — OpenAI TTS (основной) → Edge TTS (fallback) → Android TTS (offline)
- * Трёхуровневая система с автоматическим переключением при ошибках.
+ * TTS Engine — Edge TTS ru-RU-DmitryNeural (основной) → Android TTS (offline-страховка).
+ * Один канонический голос: смена провайдера не меняет тембр.
+ * onTtsFinished срабатывает ровно один раз при любом исходе — цикл слушания не умирает молча.
  */
 class TtsEngine(private val context: Context) {
     companion object {
         private const val TAG = "TtsEngine"
         private const val DEFAULT_VOICE = "ru-RU-DmitryNeural"
         
-        // OpenAI TTS config
-        private const val OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
-        private const val OPENAI_TTS_MODEL = "tts-1"
-        private const val OPENAI_TTS_VOICE = "onyx" // onyx (мужской), nova (женский)
-        
-        // Edge TTS config (fallback)
+        // Edge TTS config (основной голос)
         private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val CHROMIUM_VERSION = "143.0.3650.75"
         private const val CHROMIUM_MAJOR = "143"
@@ -51,23 +44,19 @@ class TtsEngine(private val context: Context) {
         private const val AUDIO_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
         private const val WIN_EPOCH = 11644473600L
         
-        // Retry config
-        private const val MAX_RETRIES = 1
+        // Retry config — 2 попытки Edge, потом offline-страховка
+        private const val MAX_ATTEMPTS = 2
         private const val RETRY_DELAY_MS = 1000L
+        private const val EDGE_BLOCKED_MS = 30_000L // circuit breaker: 30с, не 5 минут
 
         // Playback timeout
         private const val PLAYBACK_TIMEOUT_MS = 60_000L // 60 секунд
 
         // TTS Cache config
         private const val TTS_CACHE_MAX_SIZE = 30 // max entries (LRU eviction)
-
-        // PCM streaming config
-        private const val PCM_SAMPLE_RATE = 24000
-        private const val PCM_CHUNK_SIZE = 4096 // ~85ms of audio at 24kHz/16-bit
     }
     
     var voice: String = DEFAULT_VOICE
-    var openaiApiKey: String = ""
 
     // TTS Cache: text+voice → PCM bytes. LRU eviction.
     // Cache hit = instant playback (no network).
@@ -97,6 +86,11 @@ class TtsEngine(private val context: Context) {
 
     @Volatile
     private var edgeTtsBlockedUntil: Long = 0L
+
+    // stop() (barge-in/cancel) помечает прерывание — speak() не вызывает onTtsFinished,
+    // обработчик barge-in сам переключает состояние (иначе запись barge-in сломается).
+    @Volatile
+    private var pendingInterrupt = false
     
     // Callbacks
     var onTtsStarted: (() -> Unit)? = null
@@ -128,18 +122,13 @@ class TtsEngine(private val context: Context) {
 
     /**
      * Synthesize and play text.
-     * OpenAI TTS (основной) → Edge TTS (fallback) → Android TTS (offline)
+     * Edge TTS (основной) → Android TTS (offline). Ровно один onTtsFinished на любой исход.
      */
     suspend fun speak(text: String) = withContext(Dispatchers.IO) {
         // Clean up previous TTS silently (no interruption callbacks — we're about to play new TTS)
         synchronized(mediaPlayerLock) {
             if (isSpeaking) {
                 try {
-                    currentAudioTrack?.let { at ->
-                        if (at.playState == AudioTrack.PLAYSTATE_PLAYING) at.stop()
-                        at.release()
-                    }
-                    currentAudioTrack = null
                     mediaPlayer?.let { mp ->
                         if (mp.isPlaying) mp.stop()
                         mp.release()
@@ -150,10 +139,20 @@ class TtsEngine(private val context: Context) {
                 // session state changes (THINKING → IDLE) and cancels the pipeline.
             }
             isSpeaking = true
+            pendingInterrupt = false
         }
         onTtsStarted?.invoke()
 
         requestAudioFocus()
+
+        // Ровно один fire на любой исход — цикл слушания не умрёт молча
+        var finishFired = false
+        fun fireFinished() {
+            if (!finishFired) {
+                finishFired = true
+                onTtsFinished?.invoke()
+            }
+        }
 
         try {
             val voiceInfo = "═══════════════════════════════════════\n" +
@@ -172,82 +171,74 @@ class TtsEngine(private val context: Context) {
             }
 
             Log.d(TAG, "Synthesizing: '$text'")
-            var audioBytes: ByteArray? = null
 
-            // 0) Android TTS — если voice="android", сразу используем
+            // 1) Android TTS — если voice="android", сразу используем
             if (isAndroidVoice) {
                 Log.d(TAG, "TTS: Android TTS (оффлайн, безлимитный)")
                 EngineManager.logToFlutter("TTS", "info", "Android TTS (оффлайн)...")
                 speakWithAndroidTts(text)
-                onTtsFinished?.invoke()
-                return@withContext
+                return@withContext // fireFinished() сработает в finally
             }
 
-            // 1) TTS Cache check (мгновенное воспроизведение без сети)
+            // 2) TTS Cache check (мгновенное воспроизведение без сети)
             val cacheKey = "$text|$voice"
-            val cachedPcm = synchronized(ttsCache) { ttsCache[cacheKey] }
-            if (cachedPcm != null) {
-                Log.d(TAG, "TTS Cache HIT: '$text' (${cachedPcm.size} bytes)")
+            val cached = synchronized(ttsCache) { ttsCache[cacheKey] }
+            if (cached != null) {
+                Log.d(TAG, "TTS Cache HIT: '$text' (${cached.size} bytes)")
                 EngineManager.logToFlutter("TTS", "info", "TTS Cache (мгновенно)")
-                playPcmBytes(cachedPcm)
-                onTtsFinished?.invoke()
+                playAudio(cached)
                 return@withContext
             }
 
-            // 2) OpenAI TTS Streaming (основной — первый звук через ~100ms)
-            if (openaiApiKey.isNotEmpty()) {
-                Log.d(TAG, "TTS: попытка OpenAI Streaming TTS...")
-                EngineManager.logToFlutter("TTS", "info", "OpenAI Streaming TTS...")
-                val streamed = synthesizeAndPlayStreaming(text, openaiApiKey, cacheKey = cacheKey)
-                if (streamed) {
-                    onTtsFinished?.invoke()
+            // 3) Edge TTS — основной и единственный сетевой голос (ru-RU-DmitryNeural).
+            //    OpenAI TTS убран из цепочки: его onyx менял тембр Клёпы при смене провайдера.
+            if (System.currentTimeMillis() >= edgeTtsBlockedUntil) {
+                var attempt = 0
+                var audioBytes: ByteArray? = null
+                while (attempt < MAX_ATTEMPTS && (audioBytes == null || audioBytes.isEmpty())) {
+                    attempt++
+                    if (attempt > 1) {
+                        Log.w(TAG, "TTS: Edge retry $attempt/$MAX_ATTEMPTS...")
+                        EngineManager.logToFlutter("TTS", "warning", "Edge TTS: попытка $attempt/$MAX_ATTEMPTS...")
+                        delay(RETRY_DELAY_MS)
+                    }
+                    audioBytes = synthesizeWithEdgeTTS(text)
+                }
+                if (audioBytes != null && audioBytes.isNotEmpty()) {
+                    edgeTtsBlockedUntil = 0L
+                    if (isSpeaking) synchronized(ttsCache) { ttsCache[cacheKey] = audioBytes }
+                    Log.d(TAG, "✅ TTS Edge success: ${audioBytes.size} bytes (голос=$voice)")
+                    EngineManager.logToFlutter("TTS", "success", "✅ OK (голос=$voice, ${audioBytes.size} байт)")
+                    playAudio(audioBytes)
                     return@withContext
                 }
-                Log.w(TAG, "TTS: Streaming не сработал, fallback на full-buffer...")
-                audioBytes = synthesizeWithOpenAI(text, openaiApiKey)
+                edgeTtsBlockedUntil = System.currentTimeMillis() + EDGE_BLOCKED_MS
+                Log.w(TAG, "TTS: Edge TTS failed, circuit breaker ${EDGE_BLOCKED_MS / 1000}s")
+            } else {
+                Log.d(TAG, "TTS: Edge TTS blocked (circuit breaker, ${((edgeTtsBlockedUntil - System.currentTimeMillis()) / 1000)}s left)")
             }
 
-            // 3) Edge TTS fallback (если OpenAI не сработал)
-            if (audioBytes == null || audioBytes.isEmpty()) {
-                if (System.currentTimeMillis() < edgeTtsBlockedUntil) {
-                    Log.d(TAG, "TTS: Edge TTS blocked (circuit breaker, ${((edgeTtsBlockedUntil - System.currentTimeMillis()) / 1000)}s left)")
-                } else {
-                    Log.d(TAG, "TTS: OpenAI не сработал, пробую Edge TTS...")
-                    EngineManager.logToFlutter("TTS", "info", "Edge TTS...")
-                    audioBytes = synthesizeWithEdgeTTS(text)
-                    if (audioBytes == null || audioBytes.isEmpty()) {
-                        edgeTtsBlockedUntil = System.currentTimeMillis() + 300_000L
-                        Log.w(TAG, "TTS: Edge TTS failed, circuit breaker 5min")
-                    }
-                }
-            }
-
-            // 4) Android TTS offline fallback (русский)
-            if (audioBytes == null || audioBytes.isEmpty()) {
-                Log.w(TAG, "TTS: онлайн TTS не сработали, пробую Android TTS...")
-                EngineManager.logToFlutter("TTS", "warning", "Android TTS (offline fallback)...")
-                speakWithAndroidTts(text)
-                onTtsFinished?.invoke()
-                return@withContext
-            }
-
-            Log.d(TAG, "✅ TTS success: ${audioBytes.size} bytes (голос=$voice)")
-            EngineManager.logToFlutter("TTS", "success", "✅ OK (голос=$voice, ${audioBytes.size} байт)")
-            playAudio(audioBytes)
-            onTtsFinished?.invoke()
+            // 4) Android TTS — offline-страховка (голос другой, но молчание хуже)
+            Log.w(TAG, "TTS: онлайн недоступен, пробую Android TTS...")
+            EngineManager.logToFlutter("TTS", "warning", "Android TTS (offline fallback)...")
+            speakWithAndroidTts(text)
         } catch (e: CancellationException) {
-            // Coroutine cancelled (filler TTS interrupted by response) — exit silently
-            // Do NOT call onTtsFinished — it would corrupt the state machine
+            // Coroutine cancelled (barge-in/cancel pipeline) — exit silently.
+            // stop() уже пометил прерывание; fire в finally будет пропущен.
             Log.d(TAG, "TTS cancelled (silent exit)")
             synchronized(mediaPlayerLock) { isSpeaking = false }
             throw e // Re-throw so withContext propagates cancellation properly
         } catch (e: Exception) {
             Log.e(TAG, "❌ TTS EXCEPTION: ${e.message}", e)
             EngineManager.logToFlutter("TTS", "error", "❌ EXCEPTION: ${e.message}")
-            onTtsFinished?.invoke()
         } finally {
-            synchronized(mediaPlayerLock) {
-                isSpeaking = false
+            synchronized(mediaPlayerLock) { isSpeaking = false }
+            if (pendingInterrupt) {
+                // Прерывание через stop() — слушание переключает обработчик barge-in/cancel
+                pendingInterrupt = false
+                Log.d(TAG, "TTS interrupted — finished fired by interrupt handler")
+            } else {
+                fireFinished()
             }
         }
     }
@@ -260,15 +251,6 @@ class TtsEngine(private val context: Context) {
         
         synchronized(mediaPlayerLock) {
             try {
-                // Stop AudioTrack (streaming TTS)
-                currentAudioTrack?.let { at ->
-                    if (at.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        at.stop()
-                    }
-                    at.release()
-                }
-                currentAudioTrack = null
-
                 // Stop MediaPlayer (file-based TTS)
                 mediaPlayer?.let { mp ->
                     if (mp.isPlaying) {
@@ -288,6 +270,7 @@ class TtsEngine(private val context: Context) {
         
         // Notify if interrupted
         if (wasSpeaking) {
+            pendingInterrupt = true
             Log.d(TAG, "TTS interrupted (barge-in)")
             onTtsInterrupted?.invoke()
         }
@@ -400,254 +383,6 @@ class TtsEngine(private val context: Context) {
         val s = "%02d".format(now.get(Calendar.SECOND))
         
         return "$wd $mo $d ${now.get(Calendar.YEAR)} $h:$mi:$s GMT+0000 (Coordinated Universal Time)"
-    }
-
-    // ==================== OpenAI TTS ====================
-
-    /**
-     * Synthesize text to audio bytes via OpenAI TTS API
-     * Стабильный, одинаковый голос на всех устройствах.
-     * Voice: onyx (мужской), nova (женский), echo, alloy, fable, shimmer
-     */
-    private suspend fun synthesizeWithOpenAI(text: String, apiKey: String, voice: String = "onyx"): ByteArray? {
-        return try {
-            val escapedText = text.replace("\\", "\\\\").replace("\"", "\\\"")
-            val json = """
-                {
-                    "model": "$OPENAI_TTS_MODEL",
-                    "input": "$escapedText",
-                    "voice": "$voice",
-                    "response_format": "mp3",
-                    "speed": 1.0
-                }
-            """.trimIndent()
-
-            val request = Request.Builder()
-                .url(OPENAI_TTS_URL)
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(json.toRequestBody("application/json".toMediaTypeOrNull()))
-                .build()
-
-            val response = client.newCall(request).execute()
-            
-            if (response.isSuccessful) {
-                response.body?.bytes()
-            } else {
-                Log.e(TAG, "OpenAI TTS failed: ${response.code} ${response.message}")
-                EngineManager.logToFlutter("TTS", "error", "OpenAI TTS: ${response.code} ${response.message}")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "OpenAI TTS exception: ${e.message}", e)
-            EngineManager.logToFlutter("TTS", "error", "OpenAI TTS exception: ${e.message}")
-            null
-        }
-    }
-
-    // ==================== OpenAI TTS Streaming (PCM → AudioTrack) ====================
-
-    /**
-     * Streaming synthesis: запрашиваем PCM у OpenAI и играем через AudioTrack.
-     * Первый звук через ~100-200ms (vs 2-3s для full-buffer).
-     *
-     * @return true если streaming успешно проигран, false если ошибка (fallback на обычный путь)
-     */
-    private suspend fun synthesizeAndPlayStreaming(text: String, apiKey: String, voiceName: String = "onyx", cacheKey: String? = null): Boolean {
-        return try {
-            val escapedText = text.replace("\\", "\\\\").replace("\"", "\\\"")
-            val json = """
-                {
-                    "model": "$OPENAI_TTS_MODEL",
-                    "input": "$escapedText",
-                    "voice": "$voiceName",
-                    "response_format": "wav",
-                    "speed": 1.0
-                }
-            """.trimIndent()
-
-            val request = Request.Builder()
-                .url(OPENAI_TTS_URL)
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(json.toRequestBody("application/json".toMediaTypeOrNull()))
-                .build()
-
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.e(TAG, "Streaming TTS failed: ${response.code}")
-                return false
-            }
-
-            val inputStream = response.body?.byteStream()
-            if (inputStream == null) {
-                Log.e(TAG, "Streaming TTS: no body stream")
-                return false
-            }
-
-            // Создаём AudioTrack для PCM streaming
-            val bufferSize = AudioTrack.getMinBufferSize(
-                PCM_SAMPLE_RATE,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(PCM_CHUNK_SIZE * 2)
-
-            val audioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setSampleRate(PCM_SAMPLE_RATE)
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(bufferSize)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-
-            synchronized(mediaPlayerLock) {
-                currentAudioTrack = audioTrack
-            }
-
-            val startTime = System.currentTimeMillis()
-            audioTrack.play()
-            Log.d(TAG, "Streaming TTS: AudioTrack started")
-
-            // WAV header is 44 bytes — skip it to get raw PCM
-            var wavHeaderRemaining = 44
-
-            // Читаем PCM-чанки из network и пишем в AudioTrack
-            val buffer = ByteArray(PCM_CHUNK_SIZE)
-            var totalBytes = 0
-            var firstChunkTime = -1L
-            // Collect PCM bytes for caching
-            val pcmCollector = if (cacheKey != null) java.io.ByteArrayOutputStream() else null
-
-            inputStream.use { input ->
-                while (true) {
-                    // Проверяем остановку
-                    if (!isSpeaking) {
-                        Log.d(TAG, "Streaming TTS: stopped by user")
-                        break
-                    }
-
-                    val read = input.read(buffer)
-                    if (read == -1) break
-                    if (read == 0) continue
-
-                    // Skip WAV header
-                    if (wavHeaderRemaining > 0) {
-                        val skip = minOf(read, wavHeaderRemaining)
-                        wavHeaderRemaining -= skip
-                        if (skip >= read) continue
-                        // Shift remaining data after header
-                        val pcmLen = read - skip
-                        System.arraycopy(buffer, skip, buffer, 0, pcmLen)
-                        audioTrack.write(buffer, 0, pcmLen)
-                        totalBytes += pcmLen
-                        pcmCollector?.write(buffer, 0, pcmLen)
-                        firstChunkTime = System.currentTimeMillis()
-                        continue
-                    }
-
-                    if (firstChunkTime == -1L) {
-                        firstChunkTime = System.currentTimeMillis()
-                        Log.d(TAG, "Streaming TTS: first chunk in ${firstChunkTime - startTime}ms")
-                    }
-
-                    audioTrack.write(buffer, 0, read)
-                    totalBytes += read
-                    pcmCollector?.write(buffer, 0, read)
-                }
-            }
-
-            // Ждём пока AudioTrack доиграет
-            audioTrack.stop()
-            audioTrack.release()
-
-            synchronized(mediaPlayerLock) {
-                currentAudioTrack = null
-            }
-
-            // Cache PCM data for instant replay
-            if (pcmCollector != null && cacheKey != null && isSpeaking) {
-                val pcmData = pcmCollector.toByteArray()
-                if (pcmData.isNotEmpty()) {
-                    synchronized(ttsCache) { ttsCache[cacheKey] = pcmData }
-                    Log.d(TAG, "TTS Cache: stored '$text' (${pcmData.size} bytes)")
-                }
-            }
-
-            val elapsed = System.currentTimeMillis() - startTime
-            Log.d(TAG, "Streaming TTS: done — $totalBytes bytes, ${elapsed}ms total, first chunk at ${firstChunkTime - startTime}ms")
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Streaming TTS error: ${e.message}", e)
-            synchronized(mediaPlayerLock) {
-                try { currentAudioTrack?.release() } catch (_: Exception) {}
-                currentAudioTrack = null
-            }
-            false
-        }
-    }
-
-    @Volatile
-    private var currentAudioTrack: AudioTrack? = null
-
-    /**
-     * Play PCM bytes directly through AudioTrack (used for TTS cache hits).
-     * PCM format: 24000 Hz, 16-bit mono, little-endian.
-     */
-    private suspend fun playPcmBytes(pcmData: ByteArray) = withContext(Dispatchers.IO) {
-        val bufferSize = AudioTrack.getMinBufferSize(
-            PCM_SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        ).coerceAtLeast(PCM_CHUNK_SIZE * 2)
-
-        val audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(PCM_SAMPLE_RATE)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
-        synchronized(mediaPlayerLock) {
-            currentAudioTrack = audioTrack
-        }
-
-        audioTrack.play()
-
-        // Write in chunks
-        var offset = 0
-        while (offset < pcmData.size && isSpeaking) {
-            val chunkSize = minOf(PCM_CHUNK_SIZE, pcmData.size - offset)
-            audioTrack.write(pcmData, offset, chunkSize)
-            offset += chunkSize
-        }
-
-        audioTrack.stop()
-        audioTrack.release()
-
-        synchronized(mediaPlayerLock) {
-            currentAudioTrack = null
-        }
     }
 
     // ==================== Edge TTS WebSocket ====================
@@ -797,8 +532,7 @@ class TtsEngine(private val context: Context) {
         if (androidTts == null || !androidTtsReady) {
             Log.e(TAG, "Android TTS NOT available — agent will be silent")
             EngineManager.logToFlutter("TTS", "error", "Android TTS тоже недоступен — агент будет молчать!")
-            onTtsFinished?.invoke()
-            return@withContext
+            return@withContext // onTtsFinished вызовет finally в speak()
         }
 
         Log.d(TAG, "Android TTS speaking: '$text'")
@@ -807,17 +541,17 @@ class TtsEngine(private val context: Context) {
         val status = androidTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "edge_fallback_${System.currentTimeMillis()}")
         if (status != TextToSpeech.SUCCESS) {
             Log.e(TAG, "Android TTS speak() failed: status=$status")
-            onTtsFinished?.invoke()
             return@withContext
         }
         
-        // Ждём окончания через polling (Android TTS не даёт callback для завершения)
-        while (androidTts?.isSpeaking == true) {
+        // Ждём окончания через polling (Android TTS не даёт callback для завершения),
+        // с дедлайном — зависший TTS не должен глушить цикл слушания.
+        val deadline = System.currentTimeMillis() + PLAYBACK_TIMEOUT_MS
+        while (androidTts?.isSpeaking == true && System.currentTimeMillis() < deadline) {
             delay(200)
         }
         
         Log.d(TAG, "Android TTS playback completed")
-        onTtsFinished?.invoke()
     }
 
     /**
@@ -886,9 +620,11 @@ class TtsEngine(private val context: Context) {
         
         synchronized(mediaPlayerLock) { mediaPlayer = mp }
         
-        // Ждём окончания проигрывания с таймаутом
+        // Ждём окончания: естественное завершение, stop() (isSpeaking=false) или timeout
         val completed = withTimeoutOrNull(PLAYBACK_TIMEOUT_MS) {
-            completionLatch.await()
+            while (isSpeaking && !completionLatch.isCompleted) {
+                delay(100)
+            }
         }
         if (completed == null) {
             Log.w(TAG, "Playback timeout after ${PLAYBACK_TIMEOUT_MS}ms")
