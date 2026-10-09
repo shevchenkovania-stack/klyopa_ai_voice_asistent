@@ -189,6 +189,19 @@ class ContinuousDialogueManager {
         Log.d(TAG, "TTS finished, cooldown ${vadConfig.cooldownAfterTtsMs}ms before listening")
         setState(PipelineState.LISTENING)
     }
+
+    /**
+     * Обработка завершилась без TTS (STT пусто, эхо, галлюцинация, ошибка) —
+     * сразу возвращаемся в слушание, не ждём 30-секундный вотчдог.
+     */
+    fun onProcessingDone() {
+        if (!isSessionActive) return
+        if (currentState == PipelineState.PROCESSING) {
+            processingStartTimeMs = 0
+            Log.d(TAG, "Processing done without TTS — back to LISTENING")
+            setState(PipelineState.LISTENING)
+        }
+    }
     
     /**
      * Process audio frame for VAD and barge-in detection.

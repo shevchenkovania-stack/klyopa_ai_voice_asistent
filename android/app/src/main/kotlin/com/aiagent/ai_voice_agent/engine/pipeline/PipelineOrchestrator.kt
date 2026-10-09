@@ -451,6 +451,8 @@ class PipelineOrchestrator(
             transitionTo(PipelineState.ERROR)
         } finally {
             restoreMusicVolume()
+            // Если ответ не озвучивался (STT пуст, эхо, ошибка) — не держать 30с до watchdog
+            continuousDialogue.onProcessingDone()
             if (config.wakeWordEnabled && !continuousDialogue.isSessionActive) {
                 onResumeWakeWord()
             }
