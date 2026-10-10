@@ -63,12 +63,58 @@ class MainActivity : FlutterActivity() {
         contactsHelper = ContactsHelper(this)
     }
 
+    // ==== Автопилот: отладочный вход для автотестов голосового пайплайна ====
+    // Широковещательное сообщение com.aiagent.ai_voice_agent.TEST_UTTERANCE с extra "wav"=<путь>
+    // принимает ТОЛЬКО debug-сборка; в релизе приёмник не регистрируется.
+    private var autoPilotReceiver: android.content.BroadcastReceiver? = null
+
+    private fun registerAutoPilotReceiver() {
+        val isDebug = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!isDebug || autoPilotReceiver != null) return
+        autoPilotReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+                if (intent == null) return
+                // Второй режим того же отладочного входа: залить ключи отдельными extras,
+                // чтобы автопилот работал на свежем устройстве без ручного ввода через UI.
+                val kGroq = intent.getStringExtra("k_groq")
+                val kOpenai = intent.getStringExtra("k_openai")
+                val kGemini = intent.getStringExtra("k_gemini")
+                if (!kGroq.isNullOrEmpty() || !kOpenai.isNullOrEmpty() || !kGemini.isNullOrEmpty()) {
+                    EngineManager.setDebugKeys(groq = kGroq, openai = kOpenai, gemini = kGemini)
+                    return
+                }
+                val wav = intent.getStringExtra("wav")
+                if (wav.isNullOrEmpty()) {
+                    android.util.Log.i("AutoPilot", "BROADCAST без extra 'wav'/'k_*' — игнор")
+                    return
+                }
+                // Аппу недоступен монтированный /sdcard (mount namespace shell) —
+                // переводим «/sdcard/Android/data/<pkg>/files/x» в приватный путь.
+                val legacy = "/storage/emulated/0/Android/data/com.aiagent.ai_voice_agent/files"
+                val priv = context!!.getExternalFilesDir(null)?.absolutePath ?: wav
+                val real = wav
+                    .replace("/sdcard/Android/data/com.aiagent.ai_voice_agent/files", legacy)
+                    .replace(legacy, priv)
+                android.util.Log.i("AutoPilot", "INJECT path=$wav real=$real")
+                EngineManager.injectTestUtterance(real)
+            }
+        }
+        val filter = android.content.IntentFilter("com.aiagent.ai_voice_agent.TEST_UTTERANCE")
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(autoPilotReceiver, filter, android.content.Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(autoPilotReceiver, filter)
+        }
+        android.util.Log.i("AutoPilot", "Тестовый приёмник зарегистрирован (debug)")
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         engineInstance = flutterEngine
 
         // Initialize Kotlin AI Engine
         EngineManager.initialize(this)
+        registerAutoPilotReceiver()
 
         // Engine channel — Flutter calls Kotlin AI Engine directly
         val engineChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.aiagent.ai_voice_agent/engine")

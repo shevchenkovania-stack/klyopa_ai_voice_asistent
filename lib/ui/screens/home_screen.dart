@@ -678,6 +678,11 @@ class _HomeScreenState extends State<HomeScreen>
             onPressed: () => setState(() => _showDebug = !_showDebug),
           ),
           IconButton(
+            icon: const Icon(Icons.auto_stories),
+            tooltip: 'Журнал историй и рецептов',
+            onPressed: () => Navigator.pushNamed(context, '/journal'),
+          ),
+          IconButton(
             icon: const Icon(Icons.history),
             onPressed: () => Navigator.pushNamed(context, '/history'),
           ),
@@ -968,7 +973,7 @@ class _DialogueBubble extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           // Agent response (left-aligned)
-          if (entry.agentResponse.isNotEmpty)
+          if (entry.agentResponse.isNotEmpty) ...[
             Align(
               alignment: Alignment.centerLeft,
               child: Container(
@@ -988,6 +993,54 @@ class _DialogueBubble extends StatelessWidget {
                 ),
               ),
             ),
+            // Кнопка копирования ответа в буфер обмена
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 4, top: 2),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: () async {
+                    await Clipboard.setData(
+                      ClipboardData(text: entry.agentResponse),
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Скопировано в буфер обмена'),
+                          duration: Duration(seconds: 2),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.copy_rounded,
+                          size: 15,
+                          color: theme.colorScheme.onSurface.withAlpha(150),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Копировать',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurface.withAlpha(150),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

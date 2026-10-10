@@ -317,6 +317,7 @@ class PipelineOrchestrator(
             if (continuousDialogue.isCancelled) { onCancelled?.invoke(); return }
 
             log("STT", "success", "Continuous STT", text.take(80))
+            Log.i("AutoPilot", "STT: $text")
 
             // ── STEP 2: Echo check ──
             if (isEcho(text, lastAgentResponse)) {
@@ -332,6 +333,7 @@ class PipelineOrchestrator(
             if (isWhisperHallucination(text)) {
                 Log.i(TAG, "│ [2.5/6] HALLUCINATION ✗ filtered: '${text.take(40)}'")
                 Log.i(TAG, "└──────────────────────────────────────────────────")
+                Log.i("AutoPilot", "HALLUCINATION: ${text.take(40)}")
                 log("Hallucination", "warning", "Whisper галлюцинация отфильтрована", text.take(40))
                 restoreMusicVolume()
                 return
@@ -345,6 +347,7 @@ class PipelineOrchestrator(
                 // Respond with farewell
                 val farewellResponse = "пока!"
                 lastAgentResponse = farewellResponse
+                Log.i("AutoPilot", "RESPONSE: $farewellResponse")
                 if (farewellResponse.isNotEmpty()) {
                     transitionTo(PipelineState.TTS_SPEAKING, "🗣️ Отвечаю...")
                     onTtsStarted?.invoke()
@@ -382,6 +385,7 @@ class PipelineOrchestrator(
                         tts.speak(response)
                     }
                     lastAgentResponse = response
+                    Log.i("AutoPilot", "RESPONSE: ${response.replace("\n", " ").replace("\r", "")}")
                     onContinuousResult?.invoke(text, response)
                     timer.step("Tool TTS done")
                     Log.i(TAG, "└──────────────────────────────────────────────────")
@@ -414,6 +418,7 @@ class PipelineOrchestrator(
             Log.i(TAG, "│ [4/6] LLM  ◀ '${response.take(50)}' (+${llmTotalMs}ms, ${tokenBuffer.length}ch)")
 
             lastAgentResponse = response
+            Log.i("AutoPilot", "RESPONSE: ${response.replace("\n", " ").replace("\r", "")}")
 
             if (continuousDialogue.isCancelled) { onCancelled?.invoke(); return }
 
@@ -719,11 +724,22 @@ class PipelineOrchestrator(
             "dimatorzok",
             "torzok",
             "спасибо за просмотр",
+            "спасибо за внимание",
             "подписывайтесь на канал",
             "ставьте лайк",
+            "продолжение следует",
+            "до новых встреч",
             "всем привет" // when detected right after TTS (not as first user message)
         )
         if (hallucinationPatterns.any { lower.contains(it) }) return true
+
+        // Whole-utterance matches: short polite noise Whisper invents on synthetic/quiet audio.
+        // Exact equality so a real "спасибо, классно" still reaches the agent.
+        val hallucinationExact = listOf(
+            "спасибо.", "спасибо", "спасибо!", "хорошо.", "хорошо",
+            "логично.", "ну.", "а.", "ну ладно.", "да.", "нет."
+        )
+        if (hallucinationExact.contains(lower)) return true
     
         // Too short + no vowels = likely hallucination from noise
         val vowels = "аеёиоуыэюя".toSet()

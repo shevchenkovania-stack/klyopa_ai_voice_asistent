@@ -30,7 +30,8 @@ data class ToolCall(
  */
 data class AgentResponse(
     val message: String,
-    val toolCalls: List<ToolCall> = emptyList()
+    val toolCalls: List<ToolCall> = emptyList(),
+    val isHardFailure: Boolean = false
 ) {
     val hasToolCalls: Boolean get() = toolCalls.isNotEmpty()
 }
@@ -161,6 +162,7 @@ class VoiceAgent(
 
         // Agent loop
         var iterations = 0
+        var lastToolContent: String? = null   // последний успешно выполненный инструмент
         while (iterations < MAX_ITERATIONS) {
             iterations++
             Log.d(TAG, "Итерация $iterations")
@@ -168,6 +170,18 @@ class VoiceAgent(
             val response = callAI(messages, toolSchemas, onToken)
 
             if (!response.hasToolCalls) {
+                // Если LLM упал, но инструмент уже дал ответ (погода, курс) — озвучиваем
+                // результат напрямую. Спасаёт от 429 на финальной итерации цикла: данные
+                // уже есть, саммари модель не обязательна.
+                if (response.isHardFailure && lastToolContent != null) {
+                    val human = runCatching { JSONObject(lastToolContent).optString("message") }
+                        .getOrNull()?.takeIf { it.isNotEmpty() } ?: lastToolContent!!
+                    Log.w(TAG, "LLM недоступен — отвечаем результатом инструмента")
+                    conversationHistory.add(JSONObject().apply {
+                        put("role", "assistant"); put("content", human)
+                    })
+                    return@withContext human
+                }
                 // No tool calls — return final message
                 Log.d(TAG, "Ответ: ${response.message}")
                 conversationHistory.add(JSONObject().apply {
@@ -234,6 +248,7 @@ class VoiceAgent(
                 }
                 messages.put(toolMsg)
                 conversationHistory.add(toolMsg)
+                if (result.success) lastToolContent = truncatedResult
             }
 
             // Trim history if too long
@@ -335,15 +350,27 @@ class VoiceAgent(
         var lastError: Exception? = null
         for (attempt in 1..maxAttempts) {
             try {
-                return callProvider(primary, messages, toolSchemas, onToken)
+                val r = callProvider(primary, messages, toolSchemas, onToken)
+                // Пустой ответ без tool_calls = провайдер «съел» токены на reasoning (gpt-oss)
+                // или тихая ошибка. Не выдаём пустоту — считаем это сбоем и уходим на retry/fallback.
+                if (!r.hasToolCalls && r.message.isBlank()) {
+                    throw Exception("$primary вернул пустой ответ")
+                }
+                return r
             } catch (e: Exception) {
                 lastError = e
                 Log.e(TAG, "$primary ошибка (попытка $attempt/$maxAttempts): [${e.javaClass.simpleName}] ${e.message}")
                 
-                // Если 429 (rate limit) — сразу fallback, не ждём
-                if (e.message?.contains("429") == true) {
-                    val fallbackResult = tryFallbackProviders(messages, toolSchemas, skipProvider = primary, onToken = onToken)
-                    if (fallbackResult != null) return fallbackResult
+                // 429 — не долбить сразу: сервер сам говорит, сколько ждать.
+                // Fallback-провайдеры дергаем только когда вся серия попыток исчерпана (см. ниже).
+                if (e.message?.contains("429") == true && attempt < maxAttempts) {
+                    val waitSec = Regex("""try again in (\d+(?:\.\d+)?)s""")
+                        .find(e.message ?: "")?.groupValues?.get(1)?.toDoubleOrNull()
+                        ?: parseRetryDelay(e.message).takeIf { it > 0 }?.toDouble() ?: 5.0
+                    val delay = (waitSec.coerceIn(2.0, 20.0) * 1000).toLong()
+                    Log.w(TAG, "429: ждём ${delay}мс перед попыткой ${attempt + 1}")
+                    try { Thread.sleep(delay) } catch (_: InterruptedException) {}
+                    continue
                 }
                 
                 if (attempt < maxAttempts) {
@@ -352,7 +379,11 @@ class VoiceAgent(
             }
         }
         Log.e(TAG, "$primary — все попытки провалены: [${lastError?.javaClass?.simpleName}] ${lastError?.message}")
-        return AgentResponse(message = "Ошибка соединения. Попробуй позже.")
+        val fallback = tryFallbackProviders(messages, toolSchemas, skipProvider = primary, onToken = onToken)
+        if (fallback != null) return fallback
+        // Абсолютный последний рубеж: связь не поднялась ни у одного провайдера.
+        // Говорим по-человечески, как друг, а не technical fault.
+        return AgentResponse(message = "Связь на секунду пропала, слышишь? Переспроси, я рядом.", isHardFailure = true)
     }
 
     /**
@@ -371,7 +402,9 @@ class VoiceAgent(
             try {
                 // Для Groq/Gemini убираем инструменты (могут быть несовместимы)
                 val fbTools = if (fb != "OpenAI") JSONArray() else toolSchemas
-                return callProvider(fb, messages, fbTools, onToken)
+                val r = callProvider(fb, messages, fbTools, onToken)
+                if (r.hasToolCalls || r.message.isNotBlank()) return r
+                Log.w(TAG, "$fb fallback вернул пусто — пробуем следующего")
             } catch (fbError: Exception) {
                 Log.e(TAG, "$fb fallback ошибка: ${fbError.message}")
             }
@@ -390,8 +423,11 @@ class VoiceAgent(
 
     private fun callProvider(provider: String, messages: JSONArray, toolSchemas: JSONArray, onToken: ((String) -> Unit)? = null): AgentResponse {
         val body = JSONObject().apply {
-            put("temperature", 0.5)  // Баланс: не слишком случайно, но не робот
-            put("max_tokens", 100)   // Голос = уши. 100 токенов ≈ 2-3 предложения максимум
+            put("temperature", 0.7)  // Живее: друг-рассказчик, а не сухой энциклопедист
+            // Голос = уши, но истории/анекдотам нужно разгуляться. 150 токенов ≈ 3 реплики —
+            // для рассказа мало. Даём запас: Клёпа умеет быть кратким через промпт-лимит,
+            // а не через обрезку ответа на середине фразы.
+            put("max_tokens", if (provider == "Groq") 512 else 400)
             put("messages", messages)
 
             if (toolSchemas.length() > 0) {
@@ -419,8 +455,10 @@ class VoiceAgent(
             "Groq" -> {
                 url = GROQ_URL
                 apiKey = groqApiKey
-                model = "llama-3.1-8b-instant"  // Быстрее, выше лимиты (30k TPM)
+                model = "openai/gpt-oss-20b"  // 20b дешевле 120b по токенам; llama-3.1 с аккаунта сняты
                 body.put("model", model)
+                // gpt-oss по умолчанию много «рассуждает» и упирался в max_tokens → пустой ответ.
+                body.put("reasoning_effort", "low")
             }
             else -> {
                 url = OPENAI_URL

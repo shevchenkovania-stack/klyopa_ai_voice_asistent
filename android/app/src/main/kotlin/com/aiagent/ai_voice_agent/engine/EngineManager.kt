@@ -180,6 +180,7 @@ object EngineManager {
                 config.ttsVoice.startsWith("ru-RU-") -> config.ttsVoice
                 else -> "ru-RU-DmitryNeural" // канонический голос Клёпы (Edge TTS)
             }
+            openaiApiKey = config.openaiApiKey
             initAndroidTts()
         }
         stt = SttEngine()
@@ -369,6 +370,10 @@ object EngineManager {
         }
 
         isInitialized = true
+        // Ключи и настройки лежат в prefs (пишет Flutter). Применяем СРАЗУ, не дожидаясь
+        // syncConfig из Dart: на холодном старте он конкурирует с инициализацией движка и
+        // иногда проходит раньше появления агента — LLM оставался без ключей («Ошибка соединения»).
+        reloadConfig()
         Log.d(TAG, "Kotlin AI Engine initialized. Tools: ${toolRegistry.names}, simpleMode=${!config.useNewSessionArchitecture}")
     }
 
@@ -473,6 +478,44 @@ object EngineManager {
         Log.d(TAG, "Engine shut down")
     }
 
+    // ==================== AutoPilot (debug) ====================
+
+    /**
+     * Автопилот: инъекция готового wav в настоящий пайплайн, минуя микрофон/VAD.
+     * Результаты читаются из logcat по тегу AutoPilot: TEST_START → STT → RESPONSE → TEST_DONE.
+     * Вызывается только из отладочного широковещательного приёмника в MainActivity.
+     */
+    fun injectTestUtterance(path: String) {
+        if (!isInitialized) { Log.e("AutoPilot", "TEST_FAIL движок не инициализирован"); return }
+        val f = java.io.File(path)
+        if (!f.exists()) { Log.e("AutoPilot", "TEST_FAIL файл не найден: $path"); return }
+        scope.launch {
+            Log.i("AutoPilot", "TEST_START ${f.name} (${f.length()}B)")
+            try {
+                pipeline.processContinuousSpeech(f, onResumeWakeWord = {})
+            } catch (e: CancellationException) {
+                Log.w("AutoPilot", "TEST_CANCELLED")
+            } catch (e: Exception) {
+                Log.e("AutoPilot", "TEST_ERROR: ${e.message}")
+            }
+            Log.i("AutoPilot", "TEST_DONE")
+        }
+    }
+
+    /**
+     * Автопилот (только debug): залить API-ключи прямо в конфиг движка, не трогая
+     * зашифрованное хранилище Flutter. Ставим в prefs (сеттер EngineConfig) и сразу
+     * перечитываем в агент/оркестратор. Ключи приходят из adb-broadcast, в репозиторий не попадают.
+     */
+    fun setDebugKeys(groq: String?, openai: String?, gemini: String?) {
+        if (!isInitialized) { Log.e("AutoPilot", "SET_KEYS FAIL движок не инициализирован"); return }
+        if (!groq.isNullOrEmpty())  config.groqApiKey = groq
+        if (!openai.isNullOrEmpty()) config.openaiApiKey = openai
+        if (!gemini.isNullOrEmpty()) config.geminiApiKey = gemini
+        reloadConfig()
+        Log.i("AutoPilot", "SET_KEYS ok groq=${if (config.groqApiKey.isNotEmpty()) "✓" else "—"} openai=${if (config.openaiApiKey.isNotEmpty()) "✓" else "—"} gemini=${if (config.geminiApiKey.isNotEmpty()) "✓" else "—"}")
+    }
+
     // ==================== Config ====================
 
     fun reloadConfig() {
@@ -493,6 +536,7 @@ object EngineManager {
             config.ttsVoice.startsWith("ru-RU-") -> config.ttsVoice
             else -> "ru-RU-DmitryNeural"
         }
+        tts.openaiApiKey = config.openaiApiKey
         setWakeWordName(config.wakeWordName)
         if (config.useNewSessionArchitecture && config.enableForegroundService) {
             if (config.wakeWordEnabled && !WakeWordService.isRunning) enableWakeWord()

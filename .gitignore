@@ -59,3 +59,10 @@ assets/**/*.zip
 
 # Recovery artefacts
 record_linux_stub/
+
+# AutoPilot: синтетические тестовые WAV и артефакты (генерятся локально)
+tools/autopilot_wav/
+tools/build/
+tools/*.log
+tools/*.json
+tools/*.png

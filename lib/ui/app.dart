@@ -4,6 +4,7 @@ import 'package:ai_voice_agent/core/config/app_config.dart';
 import 'package:ai_voice_agent/ui/screens/home_screen.dart';
 import 'package:ai_voice_agent/ui/screens/settings_screen.dart';
 import 'package:ai_voice_agent/ui/screens/history_screen.dart';
+import 'package:ai_voice_agent/ui/screens/journal_screen.dart';
 import 'package:ai_voice_agent/ui/screens/permissions_screen.dart';
 import 'package:ai_voice_agent/ui/screens/api_keys_screen.dart';
 import 'package:ai_voice_agent/ui/screens/tool_tester_screen.dart';
@@ -29,6 +30,7 @@ class VoiceAgentApp extends StatelessWidget {
         '/': (_) => const HomeScreen(),
         '/settings': (_) => const SettingsScreen(),
         '/history': (_) => const HistoryScreen(),
+        '/journal': (_) => const JournalScreen(),
         '/permissions': (_) => const PermissionsScreen(),
         '/api-keys': (_) => const ApiKeysScreen(),
         '/api-keys-setup': (_) => const ApiKeysScreen(isOnboarding: true),

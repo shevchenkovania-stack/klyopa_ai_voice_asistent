@@ -99,6 +99,13 @@ class ContinuousDialogueManager {
     // Current recording buffer
     private val audioBuffer = ConcurrentLinkedQueue<Short>()
 
+    // Pre-roll ring: последние ~800мс аудио в состоянии LISTENING. VAD срабатывает
+    // с задержкой (speechStartFrames), и без pre-roll начало первой фразы терялось —
+    // «Клёпа, ты тут» превращалось в «и тут». Подмешиваем эти кадры при старте записи.
+    private val preRoll = ArrayDeque<List<Short>>()
+    private var preRollSamples = 0
+    private val preRollMaxSamples = (SAMPLE_RATE * 0.8).toInt() // 800 мс
+
     private var vadConfig = VadConfig()
 
     /**
@@ -239,7 +246,15 @@ class ContinuousDialogueManager {
                     speechFrameCount = 0
                     return
                 }
-                
+
+                // Накапливаем pre-roll (последние ~800мс), пока ещё не говорим.
+                val frame = buffer.take(read)
+                preRoll.addLast(frame)
+                preRollSamples += read
+                while (preRollSamples > preRollMaxSamples && preRoll.isNotEmpty()) {
+                    preRollSamples -= preRoll.removeFirst().size
+                }
+
                 if (energy > effectiveThreshold) {
                     speechFrameCount++
                     if (speechFrameCount >= vadConfig.speechStartFrames) {
@@ -305,9 +320,13 @@ class ContinuousDialogueManager {
     }
     
     private fun onSpeechStart() {
-        Log.d(TAG, "Speech started")
+        Log.d(TAG, "Speech started (pre-roll ${preRollSamples} сэмплов)")
         setState(PipelineState.SPEECH_RECORDING)
         audioBuffer.clear()
+        // Восстанавливаем начало фразы: подмешиваем pre-roll (то, что было до срабатывания VAD)
+        for (f in preRoll) audioBuffer.addAll(f)
+        preRoll.clear()
+        preRollSamples = 0
         silenceFrameCount = 0
         onSpeechDetected?.invoke()
     }
@@ -376,6 +395,8 @@ class ContinuousDialogueManager {
         isCancelled = false
         processingStartTimeMs = 0
         audioBuffer.clear()
+        preRoll.clear()
+        preRollSamples = 0
     }
 
     private fun resetProcessingTimer() {

@@ -26,8 +26,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
 /**
- * TTS Engine — Edge TTS ru-RU-DmitryNeural (основной) → Android TTS (offline-страховка).
- * Один канонический голос: смена провайдера не меняет тембр.
+ * TTS Engine — Edge TTS ru-RU-DmitryNeural (основной) → OpenAI TTS onyx (online-страховка, мужской)
+ * → Android TTS (offline, pitch понижен). Гендер всегда мужской: женский голос не проскакивает.
  * onTtsFinished срабатывает ровно один раз при любом исходе — цикл слушания не умирает молча.
  */
 class TtsEngine(private val context: Context) {
@@ -44,10 +44,15 @@ class TtsEngine(private val context: Context) {
         private const val AUDIO_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
         private const val WIN_EPOCH = 11644473600L
         
-        // Retry config — 2 попытки Edge, потом offline-страховка
+        // Retry config — 2 попытки Edge, потом online-страховка (OpenAI), потом Android offline
         private const val MAX_ATTEMPTS = 2
         private const val RETRY_DELAY_MS = 1000L
-        private const val EDGE_BLOCKED_MS = 30_000L // circuit breaker: 30с, не 5 минут
+        private const val EDGE_BLOCKED_MS = 12_000L // circuit breaker: короткий, чтобы скорее вернуться к Dmitry
+
+        // OpenAI TTS (online-страховка, мужской голос) — когда Edge 403, но интернет есть
+        private const val OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
+        private const val OPENAI_TTS_MODEL = "tts-1"
+        private const val OPENAI_TTS_VOICE = "onyx" // мужской, низкий — держим гендер Клёпы
 
         // Playback timeout
         private const val PLAYBACK_TIMEOUT_MS = 60_000L // 60 секунд
@@ -57,6 +62,9 @@ class TtsEngine(private val context: Context) {
     }
     
     var voice: String = DEFAULT_VOICE
+
+    // Ключ OpenAI для online-страховки TTS (мужской голос), когда Edge 403.
+    var openaiApiKey: String? = null
 
     // TTS Cache: text+voice → PCM bytes. LRU eviction.
     // Cache hit = instant playback (no network).
@@ -107,10 +115,11 @@ class TtsEngine(private val context: Context) {
                 val result = androidTts?.setLanguage(Locale("ru"))
                 androidTtsReady = result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
                 if (androidTtsReady) {
-                    // Скорость и тон чуть быстрее для естественности
-                    androidTts?.setPitch(1.0f)
-                    androidTts?.setSpeechRate(1.0f)
-                    Log.d(TAG, "Android TTS initialized (fallback ready)")
+                    // Offline-страховка: понижаем pitch, чтобы не звучать женски (Клёпа — мальчик).
+                    androidTts?.setPitch(0.7f)
+                    androidTts?.setSpeechRate(0.95f)
+                    val chosen = androidTts?.voice
+                    Log.d(TAG, "Android TTS initialized (fallback, мужской тембр pitch=0.7): voice=${chosen?.name}")
                 } else {
                     Log.w(TAG, "Android TTS: Russian language not available")
                 }
@@ -218,7 +227,20 @@ class TtsEngine(private val context: Context) {
                 Log.d(TAG, "TTS: Edge TTS blocked (circuit breaker, ${((edgeTtsBlockedUntil - System.currentTimeMillis()) / 1000)}s left)")
             }
 
-            // 4) Android TTS — offline-страховка (голос другой, но молчание хуже)
+            // 4) OpenAI TTS — online-страховка с мужским голосом (когда Edge 403/заблокирован,
+            //    но интернет есть). Не даём провалиться в женский Android-голос.
+            if (!openaiApiKey.isNullOrBlank()) {
+                val oa = synthesizeWithOpenAI(text)
+                if (oa != null && oa.isNotEmpty()) {
+                    if (isSpeaking) synchronized(ttsCache) { ttsCache[cacheKey] = oa }
+                    Log.d(TAG, "✅ TTS OpenAI fallback success: ${oa.size} bytes (voice=$OPENAI_TTS_VOICE, мужской)")
+                    EngineManager.logToFlutter("TTS", "warning", "⚠️ Edge недоступен → OpenAI (мужской, $OPENAI_TTS_VOICE)")
+                    playAudio(oa)
+                    return@withContext
+                }
+            }
+
+            // 5) Android TTS — последняя offline-страховка (голос другой, но молчание хуже)
             Log.w(TAG, "TTS: онлайн недоступен, пробую Android TTS...")
             EngineManager.logToFlutter("TTS", "warning", "Android TTS (offline fallback)...")
             speakWithAndroidTts(text)
@@ -512,6 +534,41 @@ class TtsEngine(private val context: Context) {
                 resumeOnce(result)
             }
         }, 30000)
+    }
+
+    /**
+     * Online-страховка: синтез через OpenAI TTS (мужской голос onyx).
+     * Возвращает mp3-байты или null при любой ошибке/отсутствии ключа.
+     */
+    private suspend fun synthesizeWithOpenAI(text: String): ByteArray? {
+        val key = openaiApiKey
+        if (key.isNullOrBlank()) return null
+        return try {
+            val body = org.json.JSONObject()
+                .put("model", OPENAI_TTS_MODEL)
+                .put("input", text)
+                .put("voice", OPENAI_TTS_VOICE)
+                .put("response_format", "mp3")
+                .put("speed", 1.0)
+                .toString()
+            val req = Request.Builder()
+                .url(OPENAI_TTS_URL)
+                .header("Authorization", "Bearer $key")
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "OpenAI TTS HTTP ${resp.code}")
+                    return null
+                }
+                val bytes = resp.body?.bytes()
+                if (bytes != null && bytes.isNotEmpty()) bytes else null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "OpenAI TTS error: ${e.message}")
+            null
+        }
     }
 
     // ==================== Android TTS Fallback ====================
